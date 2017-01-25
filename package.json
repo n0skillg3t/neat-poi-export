@@ -1,0 +1,16 @@
+{
+  "name": "neat-poi-export",
+  "version": "1.0.0",
+  "description": "Export POI from MongoDB to CSV, XML, OV2, GPI, GPX, KMZ, KML, RUPI and UPI",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "poi",
+    "export",
+    "json"
+  ],
+  "author": "Marc Okroy",
+  "license": "MIT"
+}
