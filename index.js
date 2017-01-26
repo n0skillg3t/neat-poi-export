@@ -5,22 +5,28 @@ var Module = require("neat-base").Module;
 var Tools = require("neat-base").Tools;
 var Promise = require("bluebird");
 var fs = require('fs');
+var moment = require('moment');
 
 var validFormats = [
-    "gpx", // done
+    "gpx",
     "asc",
     "kml",
     "loc",
-    "wpt", // maybe
-    "xml"
+    // TODO: "wpt",
+    "xml",
+    "csv",
+    "json"
 ];
-
-// ASC, GPX, KML, LOC, WPT, XML
 
 
 var contentTypes = {
-    gpx: "text/gpx",
-    xml: "text/xml"
+    gpx: "text/gpx; charset=utf-8",
+    xml: "text/xml; charset=utf-8",
+    asc: "text/asc; charset=utf-8",
+    loc: "text/loc; charset=utf-8",
+    csv: "text/csv; charset=utf-8",
+    kml: "text/kml; charset=utf-8",
+    json: "application/json; charset=utf-8"
 };
 
 module.exports = class PoiExport extends Module {
@@ -33,8 +39,10 @@ module.exports = class PoiExport extends Module {
             webserverModuleName: "webserver",
             dbModuleName: "database",
             dbModelName: "pitch",
-            exportFieldsMap: {
-                gps: "gps", //[0] = lat [1] = long
+            exportFieldsMap: { // these are required
+                gps: "gps", // required because mongoose pitch model has virtuals ( latitude, longitude ) that are referring to this field
+                lat: "latitude",
+                long: "longitude",
                 country: "country",
                 city: "city",
                 zip: "zip",
@@ -42,6 +50,11 @@ module.exports = class PoiExport extends Module {
                 type: "pitchType",
                 name: "_de.name",
                 createdAt: "_createdAt"
+            },
+            optionalFieldsMap: {
+                seaLevel: {
+                    key: "seaLevel"
+                }
             }
         }
     }
@@ -95,11 +108,19 @@ module.exports = class PoiExport extends Module {
             this.config.exportFields.push(this.config.exportFieldsMap[key]);
         }
 
+        for(var key in this.config.optionalFieldsMap) {
+            this.config.exportFields.push(this.config.optionalFieldsMap[key].key);
+        }
+
         var dbQuery = model.find(query, this.config.exportFields.join(" ")).limit(limit).skip(limit * page).sort(sort);
 
         dbQuery.exec().then((docs) => {
 
             this.validatePOIs(docs).then((validPOIs) => {
+
+                if(format === "json") {
+                    return res.json(validPOIs);
+                }
 
                 this.exportPOIs(format, validPOIs, res);
 
@@ -134,6 +155,17 @@ module.exports = class PoiExport extends Module {
                 }
 
                 if(!skip) {
+
+                    for(var key in this.config.optionalFieldsMap) {
+                        var field = this.config.optionalFieldsMap[key];
+
+                        if(POI.get(field.key)) {
+                            tempObj[key] = POI.get(field.key);
+                        } else {
+                            tempObj[key] = (field.default)?field.default:null;
+                        }
+                    }
+
                     validPOIs.push(tempObj);
                 }
             }
@@ -145,7 +177,7 @@ module.exports = class PoiExport extends Module {
     exportPOIs(format, POIs, res) {
 
         var fileData = this.getMainFileDataForFormat(format);
-        var fileName = "POI-EXPORT-DEFAULT";
+        var fileName = "POI-EXPORT_" + moment().format("DD.MM.YYYY");
         var waypoints = "";
 
         res.setHeader("content-type", contentTypes[format]);
@@ -170,14 +202,33 @@ module.exports = class PoiExport extends Module {
                     '</gpx>';
                 break;
             case "xml":
-                return '<?xml version="1.0" encoding="UTF-8"?>' +
-                    '<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:georss="http://www.georss.org/georss" xmlns:taxo="http://purl.org/rss/1.0/modules/taxonomy/" version="2.0">' +
-                    '<channel>' +
-                    '<title>Neat POI Export</title>' +
-                    '</channel>' +
+                return '<rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:dc="http://purl.org/dc/elements/1.1/">\n' +
+                    '  <channel>\n' +
+                    '    <title>Neat POI Export</title>\n' +
                     '{{POIDATA}}' +
+                    '  </channel>\n' +
                     '</rss>';
                 break;
+            case "loc":
+                return '<?xml version="1.0" encoding="UTF-8" ?>\n' +
+                    '<loc version="1.0" src="Neat POI Export">\n' +
+                    '{{POIDATA}}' +
+                    '</loc>'
+                break;
+            case "kml":
+                return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+                    '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/kml/2.2 http://schemas.opengis.net/kml/2.2.0/ogckml22.xsd">\n' +
+                    '<Document>\n' +
+                    '<name>Neat POI Export</name>' +
+                    '<description><![CDATA[Generated by Neat POI Export - https://www.npmjs.com/package/neat-poi-export]]></description>' +
+                    '{{POIDATA}}' +
+                    '</Document>' +
+                    '</kml>';
+                break;
+            case "csv":
+                return 'Latitude,Longitude,Elevation\n{{POIDATA}}';
+            default:
+                return '{{POIDATA}}';
         }
     }
 
@@ -187,14 +238,36 @@ module.exports = class PoiExport extends Module {
 
         switch(format) {
             case "gpx":
-                waypoint = '<wpt lat="'+ POI.gps[0] +'" lon="'+ POI.gps[1] +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
+                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
                 break;
             case "xml":
-                waypoint = '<item>'+ POI.name +'<title><georss:point>'+ POI.gps[0] +' '+ POI.gps[1] +'</georss:point></title></item>';
+                waypoint = '    <item>\n      <title>'+ POI.name +'</title>\n      <georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n    </item>\n';
+                break;
+            case "asc":
+                waypoint = POI.long + ',' + POI.lat + ',' + '"' + POI.name + '"\n';
+                break;
+            case "loc":
+                waypoint = '<waypoint>' +
+                    '<coord lat="'+ POI.lat +'" lon="'+ POI.long +'" />' +
+                    '<type>RV Park (Outdoors)</type>' +
+                    '<sym>RV Park (Outdoors)</sym>' +
+                    '<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>' +
+                    '<name id="'+ POI.name +'">'+ POI.name +'</name>' +
+                    '</waypoint>';
+                break;
+            case "kml":
+                waypoint = '<Placemark>' +
+                    '<name>'+ POI.name +'</name>' +
+                    '<Point>' +
+                    '<coordinates>'+ POI.long + ',' + POI.lat + ',' + (POI.seaLevel?POI.seaLevel:"0.0000000") +'</coordinates>' +
+                    '</Point>' +
+                    '</Placemark>'
+                break;
+            case "csv":
+                waypoint = POI.lat + ',' + POI.long + ',' + (POI.seaLevel?POI.seaLevel:"0.0") +'\n';
                 break;
         }
 
         return waypoint;
     }
-
 };
