@@ -7,26 +7,21 @@ var Promise = require("bluebird");
 var fs = require('fs');
 
 var validFormats = [
-    "csv",
-    "xml",
-    "ov2",
-    "gpi",
     "gpx", // done
-    "kmz",
+    "asc",
     "kml",
-    "rupi",
-    "upi"
+    "loc",
+    "wpt", // maybe
+    "xml"
 ];
 
-
-// Campground (Outdoors) - Campingplatz
-//RV Park (Outdoors) - Stellplatz
-//
+// ASC, GPX, KML, LOC, WPT, XML
 
 
 var contentTypes = {
-    gpx: "text/gpx"
-}
+    gpx: "text/gpx",
+    xml: "text/xml"
+};
 
 module.exports = class PoiExport extends Module {
 
@@ -151,25 +146,21 @@ module.exports = class PoiExport extends Module {
 
         var fileData = this.getMainFileDataForFormat(format);
         var fileName = "POI-EXPORT-DEFAULT";
+        var waypoints = "";
 
         res.setHeader("content-type", contentTypes[format]);
         res.setHeader("Content-Disposition", "attachment;filename="+ fileName + "." + format);
 
-        var waypoints = "";
-
         for(var i = 0; i<POIs.length; i++) {
-            var POI = POIs[i];
-            var waypoint = '<wpt lat="'+ POI.gps[0] +'" lon="'+ POI.gps[1] +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
-            waypoints += waypoint;
+            waypoints += this.createWaypoint(format,POIs[i]);
         }
 
         fileData = fileData.replace("{{POIDATA}}",waypoints);
-
         res.send(fileData);
     }
 
 
-    static getMainFileDataForFormat(format) {
+    getMainFileDataForFormat(format) {
         switch(format) {
             case "gpx":
                 return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' +
@@ -178,7 +169,32 @@ module.exports = class PoiExport extends Module {
                     '{{POIDATA}}' +
                     '</gpx>';
                 break;
+            case "xml":
+                return '<?xml version="1.0" encoding="UTF-8"?>' +
+                    '<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:georss="http://www.georss.org/georss" xmlns:taxo="http://purl.org/rss/1.0/modules/taxonomy/" version="2.0">' +
+                    '<channel>' +
+                    '<title>Neat POI Export</title>' +
+                    '</channel>' +
+                    '{{POIDATA}}' +
+                    '</rss>';
+                break;
         }
+    }
+
+    createWaypoint(format, POI) {
+
+        var waypoint = "";
+
+        switch(format) {
+            case "gpx":
+                waypoint = '<wpt lat="'+ POI.gps[0] +'" lon="'+ POI.gps[1] +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
+                break;
+            case "xml":
+                waypoint = '<item>'+ POI.name +'<title><georss:point>'+ POI.gps[0] +' '+ POI.gps[1] +'</georss:point></title></item>';
+                break;
+        }
+
+        return waypoint;
     }
 
 };
