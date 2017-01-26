@@ -1,6 +1,6 @@
 {
   "name": "neat-poi-export",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Export POI from MongoDB to CSV, XML, OV2, GPI, GPX, KMZ, KML, RUPI and UPI",
   "main": "index.js",
   "scripts": {
