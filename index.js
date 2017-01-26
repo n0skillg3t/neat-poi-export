@@ -19,6 +19,11 @@ var validFormats = [
 ];
 
 
+// Campground (Outdoors) - Campingplatz
+//RV Park (Outdoors) - Stellplatz
+//
+
+
 var contentTypes = {
     gpx: "text/gpx"
 }
@@ -154,7 +159,7 @@ module.exports = class PoiExport extends Module {
 
         for(var i = 0; i<POIs.length; i++) {
             var POI = POIs[i];
-            var waypoint = '<wpt lat="'+ POI.gps[0] +'" lon="'+ POI.gps[1] +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>City</sym></wpt>';
+            var waypoint = '<wpt lat="'+ POI.gps[0] +'" lon="'+ POI.gps[1] +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
             waypoints += waypoint;
         }
 
