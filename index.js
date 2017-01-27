@@ -2,7 +2,6 @@
 
 var Application = require("neat-base").Application;
 var Module = require("neat-base").Module;
-var Tools = require("neat-base").Tools;
 var Promise = require("bluebird");
 var fs = require('fs');
 var moment = require('moment');
@@ -16,6 +15,13 @@ var validFormats = [
     "xml",
     "csv",
     "json"
+];
+
+
+var requiredFields = [
+    "lat",
+    "long",
+    "name"
 ];
 
 
@@ -33,29 +39,13 @@ module.exports = class PoiExport extends Module {
 
     static defaultConfig() {
         return {
+            projectionModuleName: "projection",
             authModuleName: "auth",
             exportRoute: "/poi-export",
             elementsModuleName: "elements",
             webserverModuleName: "webserver",
             dbModuleName: "database",
-            dbModelName: "pitch",
-            exportFieldsMap: { // these are required
-                gps: "gps", // required because mongoose pitch model has virtuals ( latitude, longitude ) that are referring to this field
-                lat: "latitude",
-                long: "longitude",
-                country: "country",
-                city: "city",
-                zip: "zip",
-                street: "street",
-                type: "pitchType",
-                name: "_de.name",
-                createdAt: "_createdAt"
-            },
-            optionalFieldsMap: {
-                seaLevel: {
-                    key: "seaLevel"
-                }
-            }
+            dbModelName: "pitch"
         }
     }
 
@@ -87,7 +77,7 @@ module.exports = class PoiExport extends Module {
 
         if (Application.modules[this.config.authModuleName]) {
             if (!Application.modules[this.config.authModuleName].hasPermission(req, this.config.dbModelName, "find")) {
-                return res.status(401).end();
+                return res.status(401).end('permission denied');
             }
         }
 
@@ -96,6 +86,7 @@ module.exports = class PoiExport extends Module {
         var limit = req.body.query.limit || 10;
         var page = req.body.query.page || 0;
         var sort = req.body.query.sort || {"_createdAt": -1};
+        var projection = req.body.query.projection || null;
 
         if(validFormats.indexOf(format) === -1) {
             return res.status(400).end('invalid format "'+ format +'". Valid formats are: ' + validFormats.join(', '));
@@ -113,6 +104,12 @@ module.exports = class PoiExport extends Module {
         }
 
         var dbQuery = model.find(query, this.config.exportFields.join(" ")).limit(limit).skip(limit * page).sort(sort);
+
+        if (projection && Application.modules[this.config.projectionModuleName]) {
+            dbQuery.projection(projection, req);
+        } else {
+            this.log.debug("Neat-projection is missing. Include it into your project to map fields from your mongoose Schema to the required ( " + requiredFields.join(', ') + " )!")
+        }
 
         dbQuery.exec().then((docs) => {
 
@@ -142,31 +139,15 @@ module.exports = class PoiExport extends Module {
                 var POI = docs[i];
                 var skip = false;
 
-                var tempObj = {};
-                for(var key in this.config.exportFieldsMap) {
-                    var field = this.config.exportFieldsMap[key];
-
-                    if(!POI.get(field)) {
+                for(var x = 0; x<requiredFields.length; x++) {
+                    if(!POI[requiredFields[x]]) {
                         skip = true;
                         break;
-                    } else {
-                        tempObj[key] = POI.get(field);
                     }
                 }
 
                 if(!skip) {
-
-                    for(var key in this.config.optionalFieldsMap) {
-                        var field = this.config.optionalFieldsMap[key];
-
-                        if(POI.get(field.key)) {
-                            tempObj[key] = POI.get(field.key);
-                        } else {
-                            tempObj[key] = (field.default)?field.default:null;
-                        }
-                    }
-
-                    validPOIs.push(tempObj);
+                    validPOIs.push(POI);
                 }
             }
 
@@ -237,11 +218,11 @@ module.exports = class PoiExport extends Module {
         var waypoint = "";
 
         switch(format) {
-            case "gpx":
-                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name><time>' + POI.createdAt + '</time><sym>RV Park (Outdoors)</sym></wpt>';
+            case "gpx": // latitude, longitude, name, description, type, seaLevel, createdAt, symbol
+                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name>'+ ((POI.description)?('<desc>'+ POI.description +'</desc>'):'') +''+ ((POI.type)?('<type>'+ POI.type +'</type>'):'') +'<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele><time>' + (new Date(POI.createdAt).toISOString()) + '</time><sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym></wpt>';
                 break;
             case "xml":
-                waypoint = '    <item>\n      <title>'+ POI.name +'</title>\n      <georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n    </item>\n';
+                waypoint = '    <item>\n      '+ ((POI.createdAt)?('<pubDate>'+ (new Date(POI.createdAt).toISOString()) +'</pubDate>\n      '):'') +'<title>'+ POI.name +'</title>\n      '+ ((POI.description)?('<description>'+ POI.description +'</description>\n      '):'') +'<georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n    </item>\n';
                 break;
             case "asc":
                 waypoint = POI.long + ',' + POI.lat + ',' + '"' + POI.name + '"\n';
@@ -249,8 +230,8 @@ module.exports = class PoiExport extends Module {
             case "loc":
                 waypoint = '<waypoint>' +
                     '<coord lat="'+ POI.lat +'" lon="'+ POI.long +'" />' +
-                    '<type>RV Park (Outdoors)</type>' +
-                    '<sym>RV Park (Outdoors)</sym>' +
+                    ((POI.type)?('<type>'+ POI.type +'</type>'):'') +
+                    '<sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym>' +
                     '<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>' +
                     '<name id="'+ POI.name +'">'+ POI.name +'</name>' +
                     '</waypoint>';
