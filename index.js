@@ -54,7 +54,7 @@ module.exports = class PoiExport extends Module {
             this.log.debug("Initializing...");
 
             if (Application.modules[this.config.webserverModuleName] && this.config.exportRoute) {
-                Application.modules[this.config.webserverModuleName].addRoute("post", this.config.exportRoute, (req, res, next) => {
+                Application.modules[this.config.webserverModuleName].addRoute("get", this.config.exportRoute, (req, res, next) => {
                     this.handleRequest(req, res);
                 }, 9999);
             }
@@ -65,7 +65,7 @@ module.exports = class PoiExport extends Module {
 
     handleRequest(req, res) {
 
-        if(!req.body.format || !req.body.query) {
+        if(!req.query.format || !req.query.query) {
             return res.status(400).end('no format and/or query given');
         }
 
@@ -75,18 +75,24 @@ module.exports = class PoiExport extends Module {
             return res.status(400).end('model "' + this.config.dbModelName + '" does not exist');
         }
 
+        try {
+            var reqQuery = JSON.parse(req.query.query);
+        } catch (e) {
+            return res.status(400).end('failed to parse json');
+        }
+
         if (Application.modules[this.config.authModuleName]) {
             if (!Application.modules[this.config.authModuleName].hasPermission(req, this.config.dbModelName, "find")) {
                 return res.status(401).end('permission denied');
             }
         }
 
-        var format = req.body.format.toLowerCase();
-        var query = req.body.query.query || {};
-        var limit = req.body.query.limit || 10;
-        var page = req.body.query.page || 0;
-        var sort = req.body.query.sort || {"_createdAt": -1};
-        var projection = req.body.query.projection || null;
+        var format = req.query.format.toLowerCase();
+        var query = reqQuery.query || {};
+        var limit = reqQuery.limit || 10;
+        var page = reqQuery.page || 0;
+        var sort = reqQuery.sort || {"_createdAt": -1};
+        var projection = reqQuery.projection || null;
 
         if(validFormats.indexOf(format) === -1) {
             return res.status(400).end('invalid format "'+ format +'". Valid formats are: ' + validFormats.join(', '));
