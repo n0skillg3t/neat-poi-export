@@ -76,7 +76,7 @@ module.exports = class PoiExport extends Module {
         }
 
         try {
-            var reqQuery = JSON.parse(req.query.query);
+            var reqQuery = JSON.parse(decodeURIComponent(req.query.query));
         } catch (e) {
             return res.status(400).end('failed to parse json');
         }
