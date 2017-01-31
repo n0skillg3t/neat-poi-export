@@ -1,6 +1,6 @@
 {
   "name": "neat-poi-export",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Neat Module for exporting locations from MongoDB to ASC, GPX, KML, LOC, WPT, CSV and XML POI files.",
   "main": "index.js",
   "scripts": {
