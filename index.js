@@ -55,6 +55,13 @@ module.exports = class PoiExport extends Module {
 
             if (Application.modules[this.config.webserverModuleName] && this.config.exportRoute) {
                 Application.modules[this.config.webserverModuleName].addRoute("get", this.config.exportRoute, (req, res, next) => {
+
+                    req.connectionAborted = false;
+
+                    req.connection.on('close',function() {
+                        req.connectionAborted = true;
+                    });
+
                     this.handleRequest(req, res);
                 }, 9999);
             }
@@ -99,42 +106,78 @@ module.exports = class PoiExport extends Module {
         }
 
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-        this.config.exportFields = [];
+        var parts = 1;
 
-        for(var key in this.config.exportFieldsMap) {
-            this.config.exportFields.push(this.config.exportFieldsMap[key]);
+        // Prevent server overload
+        if(limit > 100) {
+            // 8461
+            var parts = limit / 100;
+
+            if(parts === +parts && parts !== (parts|0)) {
+                parts = parseInt(parts);
+                parts++;
+            }
         }
 
-        for(var key in this.config.optionalFieldsMap) {
-            this.config.exportFields.push(this.config.optionalFieldsMap[key].key);
+        var dbQuerys = [];
+
+        var fileName = "POI-EXPORT_" + moment().format("DD.MM.YYYY");
+
+        res.setHeader("content-type", contentTypes[format]);
+        res.setHeader("Content-Disposition", "attachment;filename="+ fileName + "." + format);
+        res.write(this.getFileHeader(format));
+
+        let result = [];
+        let exportPage = 0;
+        let self = this;
+        let exportlimit = 100;
+        function nextPage() {
+
+            if(req.connectionAborted) {
+                console.log("Connection aborted.");
+                return Promise.resolve(result);
+            }
+
+            console.log("STARTING " + exportPage);
+
+            let queryExecution = model.find(query).limit(exportlimit).skip(exportlimit * exportPage).sort(sort);
+
+            if (projection && Application.modules[self.config.projectionModuleName]) {
+                queryExecution.projection(projection, req);
+            }
+
+            return queryExecution.then((docs) => {
+                return Promise.map(docs, function(doc) {
+                    return doc;
+                });
+            }).then((results) => {
+                return self.validatePOIs(results).then((validPOIs) => {
+
+                    for(var i = 0; i<validPOIs.length; i++) {
+                        res.write(self.createWaypoint(format,validPOIs[i]));
+                    }
+
+                    if(results.length < exportlimit) {
+                        console.log("EXPORTED LAST PAGE " + exportPage);
+                        return Promise.resolve(result);
+                    }
+
+                    console.log("EXPORTED PAGE " + exportPage);
+                    exportPage++;
+                    return nextPage();
+                });
+            });
         }
 
-        var dbQuery = model.find(query, this.config.exportFields.join(" ")).limit(limit).skip(limit * page).sort(sort);
-
-        if (projection && Application.modules[this.config.projectionModuleName]) {
-            dbQuery.projection(projection, req);
-        } else {
-            this.log.debug("Neat-projection is missing. Include it into your project to map fields from your mongoose Schema to the required ( " + requiredFields.join(', ') + " )!")
-        }
-
-        dbQuery.exec().then((docs) => {
-
-            this.validatePOIs(docs).then((validPOIs) => {
-
-                if(format === "json") {
-                    return res.json(validPOIs);
-                }
-
-                this.exportPOIs(format, validPOIs, res);
-
-            }, (err) => {
-                res.err(err);
-            })
-
+        nextPage().then((result) => {
+            res.write(this.getFileFooter(format));
+            res.end();
         }, (err) => {
-            res.err(err);
-        });
 
+            console.log(err);
+            res.status(500);
+            res.end();
+        });
     }
 
     validatePOIs(docs) {
@@ -159,23 +202,6 @@ module.exports = class PoiExport extends Module {
 
             resolve(validPOIs);
         });
-    }
-
-    exportPOIs(format, POIs, res) {
-
-        var fileData = this.getMainFileDataForFormat(format);
-        var fileName = "POI-EXPORT_" + moment().format("DD.MM.YYYY");
-        var waypoints = "";
-
-        res.setHeader("content-type", contentTypes[format]);
-        res.setHeader("Content-Disposition", "attachment;filename="+ fileName + "." + format);
-
-        for(var i = 0; i<POIs.length; i++) {
-            waypoints += this.createWaypoint(format,POIs[i]);
-        }
-
-        fileData = fileData.replace("{{POIDATA}}",waypoints);
-        res.send(fileData);
     }
 
 
@@ -216,6 +242,58 @@ module.exports = class PoiExport extends Module {
                 return 'Latitude,Longitude,Elevation\n{{POIDATA}}';
             default:
                 return '{{POIDATA}}';
+        }
+    }
+
+
+    getFileHeader(format) {
+        switch(format) {
+            case "gpx":
+                return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' +
+                    '<gpx version="1.1" creator="POI Export"><metadata>' +
+                    '<author><name>POI Export</name></author></metadata>\n';
+                break;
+            case "xml":
+                return '<rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:dc="http://purl.org/dc/elements/1.1/">\n' +
+                    '  <channel>\n' +
+                    '    <title>POI Export</title>\n';
+                break;
+            case "loc":
+                return '<?xml version="1.0" encoding="UTF-8" ?>\n' +
+                    '<loc version="1.0" src="POI Export">\n';
+                break;
+            case "kml":
+                return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+                    '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/kml/2.2 http://schemas.opengis.net/kml/2.2.0/ogckml22.xsd">\n' +
+                    '<Document>\n' +
+                    '<name>POI Export</name>' +
+                    '<description>Default POI Export</description>\n';
+                break;
+            case "csv":
+                return 'Latitude,Longitude,Elevation\n';
+            default:
+                return '';
+        }
+    }
+
+    getFileFooter(format) {
+        switch(format) {
+            case "gpx":
+                return '\n</gpx>';
+                break;
+            case "xml":
+                return '\n  </channel>\n' +
+                    '</rss>';
+                break;
+            case "loc":
+                return '\n</loc>';
+                break;
+            case "kml":
+                return '\n</Document>' +
+                    '</kml>';
+                break;
+            default:
+                return '';
         }
     }
 
