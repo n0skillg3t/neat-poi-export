@@ -1,31 +1,31 @@
 "use strict";
 
-var Application = require("neat-base").Application;
-var Module = require("neat-base").Module;
-var Promise = require("bluebird");
-var fs = require('fs');
-var moment = require('moment');
+let Application = require("neat-base").Application;
+let Module = require("neat-base").Module;
+let Promise = require("bluebird");
+let fs = require('fs');
+let moment = require('moment');
 
-var validFormats = [
+let validFormats = [
     "gpx",
     "asc",
     "kml",
     "loc",
-    // TODO: "wpt",
     "xml",
     "csv",
     "json"
 ];
+//wpt ?
 
 
-var requiredFields = [
+let requiredFields = [
     "lat",
     "long",
     "name"
 ];
 
 
-var contentTypes = {
+let contentTypes = {
     gpx: "text/gpx; charset=utf-8",
     xml: "text/xml; charset=utf-8",
     asc: "text/asc; charset=utf-8",
@@ -34,6 +34,8 @@ var contentTypes = {
     kml: "text/kml; charset=utf-8",
     json: "application/json; charset=utf-8"
 };
+
+let exportRunning = false;
 
 module.exports = class PoiExport extends Module {
 
@@ -56,8 +58,6 @@ module.exports = class PoiExport extends Module {
             if (Application.modules[this.config.webserverModuleName] && this.config.exportRoute) {
                 Application.modules[this.config.webserverModuleName].addRoute("get", this.config.exportRoute, (req, res, next) => {
 
-                    req.connectionAborted = false;
-
                     req.connection.on('close',function() {
                         req.connectionAborted = true;
                     });
@@ -72,18 +72,24 @@ module.exports = class PoiExport extends Module {
 
     handleRequest(req, res) {
 
+        if(exportRunning) {
+            return res.status(503).end('Busy exporting. Please try again in a couple of minutes.');
+        }
+
         if(!req.query.format || !req.query.query) {
             return res.status(400).end('no format and/or query given');
         }
 
+        let model, reqQuery;
+
         try {
-            var model = Application.modules[this.config.dbModuleName].getModel(this.config.dbModelName);
+            model = Application.modules[this.config.dbModuleName].getModel(this.config.dbModelName);
         } catch (e) {
             return res.status(400).end('model "' + this.config.dbModelName + '" does not exist');
         }
 
         try {
-            var reqQuery = JSON.parse(decodeURIComponent(req.query.query));
+            reqQuery = JSON.parse(decodeURIComponent(req.query.query));
         } catch (e) {
             return res.status(400).end('failed to parse json');
         }
@@ -94,34 +100,17 @@ module.exports = class PoiExport extends Module {
             }
         }
 
-        var format = req.query.format.toLowerCase();
-        var query = reqQuery.query || {};
-        var limit = reqQuery.limit || 10;
-        var page = reqQuery.page || 0;
-        var sort = reqQuery.sort || {"_createdAt": -1};
-        var projection = reqQuery.projection || null;
+        let format = req.query.format.toLowerCase();
+        let query = reqQuery.query || {};
+        let sort = reqQuery.sort || {"_createdAt": -1};
+        let projection = reqQuery.projection || null;
 
         if(validFormats.indexOf(format) === -1) {
             return res.status(400).end('invalid format "'+ format +'". Valid formats are: ' + validFormats.join(', '));
         }
 
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-        var parts = 1;
-
-        // Prevent server overload
-        if(limit > 100) {
-            // 8461
-            var parts = limit / 100;
-
-            if(parts === +parts && parts !== (parts|0)) {
-                parts = parseInt(parts);
-                parts++;
-            }
-        }
-
-        var dbQuerys = [];
-
-        var fileName = "POI-EXPORT_" + moment().format("DD.MM.YYYY");
+        let fileName = "POI-EXPORT_" + moment().format("DD.MM.YYYY");
 
         res.setHeader("content-type", contentTypes[format]);
         res.setHeader("Content-Disposition", "attachment;filename="+ fileName + "." + format);
@@ -131,11 +120,16 @@ module.exports = class PoiExport extends Module {
         let exportPage = 0;
         let self = this;
         let exportlimit = 100;
+
         function nextPage() {
 
             if(req.connectionAborted) {
                 console.log("Connection aborted.");
+                exportRunning = false;
                 return Promise.resolve(result);
+            } else if(!exportRunning) {
+                console.log("Export started.");
+                exportRunning = true;
             }
 
             console.log("STARTING " + exportPage);
@@ -158,7 +152,7 @@ module.exports = class PoiExport extends Module {
                     }
 
                     if(results.length < exportlimit) {
-                        console.log("EXPORTED LAST PAGE " + exportPage);
+                        console.log("Export finished with page " + exportPage);
                         return Promise.resolve(result);
                     }
 
@@ -170,9 +164,12 @@ module.exports = class PoiExport extends Module {
         }
 
         nextPage().then((result) => {
+            exportRunning = false;
+
             res.write(this.getFileFooter(format));
             res.end();
         }, (err) => {
+            exportRunning = false;
 
             console.log(err);
             res.status(500);
@@ -205,47 +202,6 @@ module.exports = class PoiExport extends Module {
     }
 
 
-    getMainFileDataForFormat(format) {
-        switch(format) {
-            case "gpx":
-                return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' +
-                    '<gpx version="1.1" creator="POI Export"><metadata>' +
-                    '<author><name>POI Export</name></author></metadata>' +
-                    '{{POIDATA}}' +
-                    '</gpx>';
-                break;
-            case "xml":
-                return '<rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:dc="http://purl.org/dc/elements/1.1/">\n' +
-                    '  <channel>\n' +
-                    '    <title>POI Export</title>\n' +
-                    '{{POIDATA}}' +
-                    '  </channel>\n' +
-                    '</rss>';
-                break;
-            case "loc":
-                return '<?xml version="1.0" encoding="UTF-8" ?>\n' +
-                    '<loc version="1.0" src="POI Export">\n' +
-                    '{{POIDATA}}' +
-                    '</loc>'
-                break;
-            case "kml":
-                return '<?xml version="1.0" encoding="UTF-8"?>\n' +
-                    '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/kml/2.2 http://schemas.opengis.net/kml/2.2.0/ogckml22.xsd">\n' +
-                    '<Document>\n' +
-                    '<name>POI Export</name>' +
-                    '<description>Default POI Export</description>' +
-                    '{{POIDATA}}' +
-                    '</Document>' +
-                    '</kml>';
-                break;
-            case "csv":
-                return 'Latitude,Longitude,Elevation\n{{POIDATA}}';
-            default:
-                return '{{POIDATA}}';
-        }
-    }
-
-
     getFileHeader(format) {
         switch(format) {
             case "gpx":
@@ -267,7 +223,7 @@ module.exports = class PoiExport extends Module {
                     '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/kml/2.2 http://schemas.opengis.net/kml/2.2.0/ogckml22.xsd">\n' +
                     '<Document>\n' +
                     '<name>POI Export</name>' +
-                    '<description>Default POI Export</description>\n';
+                    '<description>POI Export</description>\n';
                 break;
             case "csv":
                 return 'Latitude,Longitude,Elevation\n';
@@ -303,7 +259,7 @@ module.exports = class PoiExport extends Module {
 
         switch(format) {
             case "gpx":
-                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name>'+ ((POI.description)?('<desc>'+ POI.description +'</desc>'):'') +''+ ((POI.type)?('<type>'+ POI.type +'</type>'):'') +'<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele><time>' + (new Date(POI.createdAt).toISOString()) + '</time><sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym></wpt>';
+                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name>'+ ((POI.description)?('<desc>'+ POI.description +'</desc>'):'') +''+ ((POI.type)?('<type>'+ POI.type +'</type>'):'') +'<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele><time>' + (new Date(POI.createdAt).toISOString()) + '</time><sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym></wpt>\n';
                 break;
             case "xml":
                 waypoint = '    <item>\n      '+ ((POI.createdAt)?('<pubDate>'+ (new Date(POI.createdAt).toISOString()) +'</pubDate>\n      '):'') +'<title>'+ POI.name +'</title>\n      '+ ((POI.description)?('<description>'+ POI.description +'</description>\n      '):'') +'<georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n    </item>\n';
@@ -318,7 +274,7 @@ module.exports = class PoiExport extends Module {
                     '<sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym>' +
                     '<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>' +
                     '<name id="'+ POI.name +'">'+ POI.name +'</name>' +
-                    '</waypoint>';
+                    '</waypoint>\n';
                 break;
             case "kml":
                 waypoint = '<Placemark>' +
@@ -326,7 +282,7 @@ module.exports = class PoiExport extends Module {
                     '<Point>' +
                     '<coordinates>'+ POI.long + ',' + POI.lat + ',' + (POI.seaLevel?POI.seaLevel:"0.0000000") +'</coordinates>' +
                     '</Point>' +
-                    '</Placemark>'
+                    '</Placemark>\n';
                 break;
             case "csv":
                 waypoint = POI.lat + ',' + POI.long + ',' + (POI.seaLevel?POI.seaLevel:"0.0") +'\n';
