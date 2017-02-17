@@ -15,15 +15,12 @@ let validFormats = [
     "csv",
     "json"
 ];
-//wpt ?
-
 
 let requiredFields = [
     "lat",
     "long",
     "name"
 ];
-
 
 let contentTypes = {
     gpx: "text/gpx; charset=utf-8",
@@ -72,6 +69,8 @@ module.exports = class PoiExport extends Module {
 
     handleRequest(req, res) {
 
+        let model, reqQuery;
+
         if(exportRunning) {
             return res.status(503).end('Busy exporting. Please try again in a couple of minutes.');
         }
@@ -79,8 +78,6 @@ module.exports = class PoiExport extends Module {
         if(!req.query.format || !req.query.query) {
             return res.status(400).end('no format and/or query given');
         }
-
-        let model, reqQuery;
 
         try {
             model = Application.modules[this.config.dbModuleName].getModel(this.config.dbModelName);
@@ -96,11 +93,21 @@ module.exports = class PoiExport extends Module {
 
         if (Application.modules[this.config.authModuleName]) {
             if (!Application.modules[this.config.authModuleName].hasPermission(req, this.config.dbModelName, "find")) {
-                return res.status(401).end('permission denied');
+                return res.status(401).end('access denied');
             }
         }
 
         let format = req.query.format.toLowerCase();
+        let customIcon = {};
+
+        if(req.query.customicon) {
+            try {
+                customIcon = JSON.parse(decodeURIComponent(req.query.customicon));
+            } catch(e) {
+                return res.status(400).end('failed to parse json');
+            }
+        }
+
         let query = reqQuery.query || {};
         let sort = reqQuery.sort || {"_createdAt": -1};
         let projection = reqQuery.projection || null;
@@ -114,7 +121,9 @@ module.exports = class PoiExport extends Module {
 
         res.setHeader("content-type", contentTypes[format]);
         res.setHeader("Content-Disposition", "attachment;filename="+ fileName + "." + format);
-        res.write(this.getFileHeader(format));
+
+
+        res.write(this.getFileHeader(format,customIcon));
 
         let result = [];
         let exportPage = 0;
@@ -148,7 +157,7 @@ module.exports = class PoiExport extends Module {
                 return self.validatePOIs(results).then((validPOIs) => {
 
                     for(var i = 0; i<validPOIs.length; i++) {
-                        res.write(self.createWaypoint(format,validPOIs[i]));
+                        res.write(self.createWaypoint(format,validPOIs[i],customIcon));
                     }
 
                     if(results.length < exportlimit) {
@@ -163,7 +172,7 @@ module.exports = class PoiExport extends Module {
             });
         }
 
-        nextPage().then((result) => {
+        nextPage().then(() => {
             exportRunning = false;
 
             res.write(this.getFileFooter(format));
@@ -202,17 +211,21 @@ module.exports = class PoiExport extends Module {
     }
 
 
-    getFileHeader(format) {
+    getFileHeader(format, customIcon) {
         switch(format) {
             case "gpx":
-                return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' +
-                    '<gpx version="1.1" creator="POI Export"><metadata>' +
-                    '<author><name>POI Export</name></author></metadata>\n';
+                return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' +
+                    '<gpx xmlns="http://www.topografix.com/GPX/1/1" creator="POI Export" version="1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">\n' +
+                    '   <metadata>\n'+
+                    '       <author>\n' +
+                    '           <name>POI Export</name>\n' +
+                    '       </author>\n' +
+                    '   </metadata>\n';
                 break;
             case "xml":
                 return '<rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:dc="http://purl.org/dc/elements/1.1/">\n' +
-                    '  <channel>\n' +
-                    '    <title>POI Export</title>\n';
+                    '   <channel>\n' +
+                    '       <title>POI Export</title>\n';
                 break;
             case "loc":
                 return '<?xml version="1.0" encoding="UTF-8" ?>\n' +
@@ -221,9 +234,10 @@ module.exports = class PoiExport extends Module {
             case "kml":
                 return '<?xml version="1.0" encoding="UTF-8"?>\n' +
                     '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/kml/2.2 http://schemas.opengis.net/kml/2.2.0/ogckml22.xsd">\n' +
-                    '<Document>\n' +
-                    '<name>POI Export</name>' +
-                    '<description>POI Export</description>\n';
+                    '   <Document>\n' +
+                    '       <name>POI Export</name>\n' +
+                    '       <description>POI Export</description>\n' +
+                    ''+ ((customIcon.kml)?('       <Style id="kmlCustomIcon">\n          <IconStyle>\n              <Icon>\n               <href>' + customIcon.kml + '</href>\n              </Icon>\n          </IconStyle>\n       </Style>'):'');
                 break;
             case "csv":
                 return 'Latitude,Longitude,Elevation\n';
@@ -235,17 +249,17 @@ module.exports = class PoiExport extends Module {
     getFileFooter(format) {
         switch(format) {
             case "gpx":
-                return '\n</gpx>';
+                return '</gpx>';
                 break;
             case "xml":
-                return '\n  </channel>\n' +
+                return '    </channel>\n' +
                     '</rss>';
                 break;
             case "loc":
-                return '\n</loc>';
+                return '</loc>';
                 break;
             case "kml":
-                return '\n</Document>' +
+                return '    </Document>' +
                     '</kml>';
                 break;
             default:
@@ -253,42 +267,55 @@ module.exports = class PoiExport extends Module {
         }
     }
 
-    createWaypoint(format, POI) {
+    createWaypoint(format, POI, customIcon) {
 
         var waypoint = "";
 
         switch(format) {
             case "gpx":
-                waypoint = '<wpt lat="'+ POI.lat +'" lon="'+ POI.long +'"><name>'+ POI.name +'</name>'+ ((POI.description)?('<desc>'+ POI.description +'</desc>'):'') +''+ ((POI.type)?('<type>'+ POI.type +'</type>'):'') +'<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele><time>' + (new Date(POI.createdAt).toISOString()) + '</time><sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym></wpt>\n';
+                waypoint = '    <wpt lat="'+ POI.lat +'" lon="'+ POI.long +'">\n' +
+                    '       <name>'+ POI.name +'</name>\n' +
+                    ''+ ((POI.description)?('       <desc>'+ POI.description +'</desc>\n'):'') +
+                    ''+ ((POI.type)?('      <type>'+ POI.type +'</type>\n'):'') +
+                    '       <ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>\n' +
+                    '       <time>' + (new Date(POI.createdAt).toISOString()) + '</time>\n' +
+                    '       <sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym>\n' +
+                    ''+ ((customIcon.gpx)?('      <link href="'+ customIcon.gpx +'"/>\n'):'') +
+                    '   </wpt>\n';
                 break;
             case "xml":
-                waypoint = '    <item>\n      '+ ((POI.createdAt)?('<pubDate>'+ (new Date(POI.createdAt).toISOString()) +'</pubDate>\n      '):'') +'<title>'+ POI.name +'</title>\n      '+ ((POI.description)?('<description>'+ POI.description +'</description>\n      '):'') +'<georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n    </item>\n';
+                waypoint = '        <item>\n' +
+                    ''+ ((POI.createdAt)?('            <pubDate>'+ (new Date(POI.createdAt).toISOString()) +'</pubDate>\n'):'') +
+                    '            <title>'+ POI.name +'</title>\n' +
+                    ((POI.description)?('            <description>'+ POI.description +'</description>\n'):'') +
+                    '            <georss:point>'+ POI.lat +' '+ POI.long +'</georss:point>\n' +
+                    '        </item>\n';
                 break;
             case "asc":
                 waypoint = POI.long + ',' + POI.lat + ',' + '"' + POI.name + '"\n';
                 break;
             case "loc":
-                waypoint = '<waypoint>' +
-                    '<coord lat="'+ POI.lat +'" lon="'+ POI.long +'" />' +
-                    ((POI.type)?('<type>'+ POI.type +'</type>'):'') +
-                    '<sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym>' +
-                    '<ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>' +
-                    '<name id="'+ POI.name +'">'+ POI.name +'</name>' +
-                    '</waypoint>\n';
+                waypoint = '    <waypoint>\n' +
+                    '        <coord lat="'+ POI.lat +'" lon="'+ POI.long +'" />\n' +
+                    ((POI.type)?('        <type>'+ POI.type +'</type>\n'):'') +
+                    '        <sym>'+ ((POI.symbol)?POI.symbol:'0') +'</sym>\n' +
+                    '        <ele>'+ (POI.seaLevel?POI.seaLevel:"0.0000000") +'</ele>\n' +
+                    '        <name id="'+ POI.name +'">'+ POI.name +'</name>\n' +
+                    '    </waypoint>\n';
                 break;
             case "kml":
-                waypoint = '<Placemark>' +
-                    '<name>'+ POI.name +'</name>' +
-                    '<Point>' +
-                    '<coordinates>'+ POI.long + ',' + POI.lat + ',' + (POI.seaLevel?POI.seaLevel:"0.0000000") +'</coordinates>' +
-                    '</Point>' +
-                    '</Placemark>\n';
+                waypoint = '            <Placemark>\n' +
+                    '                <name>'+ POI.name +'</name>\n' +
+                    ((customIcon.kml)?('                <styleUrl>#kmlCustomIcon</styleUrl>\n'):'') +
+                    '                <Point>\n' +
+                    '                    <coordinates>'+ POI.long + ',' + POI.lat + ',' + (POI.seaLevel?POI.seaLevel:"0.0000000") +'</coordinates>\n' +
+                    '                </Point>\n' +
+                    '            </Placemark>\n';
                 break;
             case "csv":
                 waypoint = POI.lat + ',' + POI.long + ',' + (POI.seaLevel?POI.seaLevel:"0.0") +'\n';
                 break;
         }
-
         return waypoint;
     }
 };
